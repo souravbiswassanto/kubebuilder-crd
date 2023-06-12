@@ -1,0 +1,12 @@
+apiVersion: makecrd.com.makecrd.com/v1alpha1
+kind: Crd
+metadata:
+  labels:
+    app.kubernetes.io/name: crd
+    app.kubernetes.io/instance: crd-sample
+    app.kubernetes.io/part-of: kubebuilder-crd
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: kubebuilder-crd
+  name: crd-sample
+spec:
+  # TODO(user): Add fields here
