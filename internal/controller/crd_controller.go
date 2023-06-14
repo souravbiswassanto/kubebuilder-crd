@@ -23,11 +23,16 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	logger "log"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 	"strings"
 	"time"
 )
@@ -148,11 +153,85 @@ func (r *CrdReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *CrdReconciler) SetupWithManager(mgr ctrl.Manager) error {
+
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &appsv1.Deployment{}, v1alpha1.DeployOwnerKey, func(object client.Object) []string {
+		deployment := object.(*appsv1.Deployment)
+		owner := metav1.GetControllerOf(deployment)
+		if owner == nil {
+			return nil
+		}
+		if owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != v1alpha1.MyKind {
+			return nil
+		}
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Service{}, v1alpha1.SvcOwnerKey, func(object client.Object) []string {
+		service := object.(*corev1.Service)
+		owner := metav1.GetControllerOf(service)
+		if owner == nil {
+			return nil
+		}
+		if owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != v1alpha1.MyKind {
+			return nil
+		}
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
+	handlerForDeployment := handler.EnqueueRequestsFromMapFunc(func(obj client.Object) []reconcile.Request {
+		crds := &v1alpha1.CrdList{}
+		if err := r.List(context.Background(), crds); err != nil {
+			return nil
+		}
+		var request []reconcile.Request
+		for _, crd := range crds.Items {
+			deploymentName := func() string {
+				name := crd.Spec.Name
+				if name == "" {
+					name = strings.Join(buildSlice(crd.Name, v1alpha1.Deployment), v1alpha1.Dash)
+				}
+				return name
+			}()
+			if deploymentName == obj.GetName() && crd.Namespace == obj.GetNamespace() {
+				tempDeployment := &appsv1.Deployment{}
+				if err := r.Get(context.Background(), types.NamespacedName{
+					Namespace: obj.GetNamespace(),
+					Name:      obj.GetName(),
+				}, tempDeployment); err != nil {
+					if errors.IsNotFound(err) {
+						request = append(request, reconcile.Request{
+							NamespacedName: types.NamespacedName{
+								Namespace: crd.Namespace,
+								Name:      crd.Name,
+							},
+						})
+						continue
+					} else {
+						return nil
+					}
+				}
+				if tempDeployment.Spec.Replicas != crd.Spec.Replicas {
+					request = append(request, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Namespace: crd.Namespace,
+							Name:      crd.Name,
+						},
+					})
+				}
+			}
+		}
+		return request
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Crd{}).
 		//Watches(&source.Kind{Type: &appsv1.Deployment{}}, handlerForDeployment).
 		//	Watches(&source.Kind{Type: &appsv1.Deployment{}}, handlerForDeployment).
-		Owns(&appsv1.Deployment{}).
+		Watches(&source.Kind{Type: &appsv1.Deployment{}}, handlerForDeployment).
 		Owns(&corev1.Service{}).
 		Complete(r)
 }
